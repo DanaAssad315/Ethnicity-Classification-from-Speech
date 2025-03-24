@@ -1,0 +1,416 @@
+import os
+from google.colab import drive
+
+## Connect to drive to get the dataset:
+drive.mount('/content/drive')
+
+dataset_path = '/content/drive/MyDrive/dataset'
+
+## Print the directory for all files 
+for root, dirs, files in os.walk(dataset_path):
+  print(f"Directory: {root}")
+  for file in files:
+    
+    print(f"  File: {file}")
+
+
+## Optional" Play and listen to any file
+import os
+from google.colab import files, output
+from IPython.display import Audio, display
+
+dataset_path = '/content/drive/MyDrive/dataset'
+
+file_to_play = input("\nEnter file name you want to play:")
+
+file_found = False
+
+file_path = None
+
+for root, dirs, files in os.walk(dataset_path):
+  if file_to_play in files:
+    file_path = os.path.join(root, file_to_play)
+    print(f"File found: {file_path}")
+
+    file_found = True
+    break
+
+if file_found:
+    try:
+      print("\nPlaying audio in Colab...")
+      display(Audio(file_path, autoplay=True))
+
+    except Exception as e:
+      print(f"Error playing audio in Colab: {e}")
+else:
+  print(f"\nFile '{file_to_play}' not found in the directory.")
+
+## Process the audio files,
+
+import os
+import librosa
+import noisereduce as nr
+import numpy as np
+from scipy.io.wavfile import write
+from pydub import AudioSegment, silence
+from google.colab import drive
+
+## Function to remove silene from audio files 
+def remove_silence(input_path, silence_len=500, silence_thresh=-35):
+  audio = AudioSegment.from_file(input_path, format="wav")
+  chunks = silence.split_on_silence(
+    audio,
+    min_silence_len=silence_len,
+    silence_thresh=silence_thresh )
+  
+   ## Combine all non-silent chunks
+  if chunks:
+    processed_audio = sum(chunks)  
+
+  ## If no silence detected, will use the original audio
+  else:
+    processed_audio = audio  
+
+  return processed_audio
+
+
+## Function to process an audio files 
+def preprocess_audio(input_path, output_path, target_sr=16000, silence_len=500, silence_thresh=-35):
+    #firstly --> Remove silence: 
+    audio_segment = remove_silence(input_path, silence_len, silence_thresh)
+    temp_file = "temp_" + os.path.basename(input_path)
+
+    audio_segment.export(temp_file, format="wav")
+
+    audio, sr = librosa.load(temp_file, sr=None)
+    reduced_noise = nr.reduce_noise(y=audio, sr=sr, prop_decrease=0.8)
+
+    normalized_audio = reduced_noise / np.max(np.abs(reduced_noise))
+    resampled_audio = librosa.resample(normalized_audio, orig_sr=sr, target_sr=target_sr)
+
+    ## Save the processed audio
+    write(output_path, target_sr, (resampled_audio * 32767).astype(np.int16))
+    os.remove(temp_file)
+    print(f"Processed and saved to {output_path}")
+
+dataset_path = '/content/drive/MyDrive/dataset'
+
+## the processed audio files saved in 'processed_dataset' file
+output_base_path = '/content/drive/MyDrive/processed_dataset' 
+
+for root, dirs, files in os.walk(dataset_path):
+  for file in files:
+
+    if file.endswith('.wav'):
+
+      relative_path = os.path.relpath(root, dataset_path)
+
+      base_folder = relative_path.split(os.sep)[0] 
+
+      ## classification: white or asian
+      classification = 'white' if 'white' in relative_path.lower() else 'asian'
+
+      output_folder = os.path.join(output_base_path, base_folder, classification)
+
+      if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+      input_path = os.path.join(root, file)
+
+      output_path = os.path.join(output_folder, file)
+
+      # Preprocess and save the audio!
+      preprocess_audio(input_path, output_path)
+
+## Feature Extraction
+
+import os
+import librosa
+import numpy as np
+import pandas as pd
+
+# Function to extract MFCC features from an audio file: 
+def extract_features(file_path):
+  try:
+    y, sr = librosa.load(file_path, sr=22050) 
+    n_fft = 2048
+    hop_length = 512
+
+    ### MFCCs ### 
+    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20, n_fft=n_fft, hop_length=hop_length)
+    mfccs_mean = np.mean(mfccs, axis=1)
+
+    ## Compute Delta MFCC and Delta-Delta MFCC ## 
+    delta_mfccs = librosa.feature.delta(mfccs)
+    
+    delta_mfccs_mean = np.mean(delta_mfccs, axis=1)
+
+    delta_delta_mfccs = librosa.feature.delta(mfccs, order=2)
+    delta_delta_mfccs_mean = np.mean(delta_delta_mfccs, axis=1)
+
+    ### Compute Zero-Crossing Rate, Spectral Centroid, and Energy ##
+    zcr = librosa.feature.zero_crossing_rate(y)
+    zcr_mean = np.mean(zcr)
+
+    spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+    spectral_centroid_mean = np.mean(spectral_centroid)
+
+    energy = librosa.feature.rms(y=y)
+    energy_mean = np.mean(energy)
+
+    ## Add all features into a single array:
+    features = np.concatenate((mfccs_mean, delta_mfccs_mean, delta_delta_mfccs_mean,
+                                [zcr_mean, spectral_centroid_mean, energy_mean]))
+    return features
+
+  except Exception as e:
+    print(f"Error extracting features from {file_path}: {e}")
+  
+  return None
+
+
+dataset_path = '/content/drive/MyDrive/processed_dataset'
+
+train_features_output_path = '/content/drive/MyDrive/train_features.csv'
+test_features_output_path = '/content/drive/MyDrive/test_features.csv'
+
+### For Training data:
+
+train_features_list = []
+train_labels_list = []
+
+train_path = os.path.join(dataset_path, 'Train')
+
+for ethnicity in ['white', 'asian']:
+  ethnicity_path = os.path.join(train_path, ethnicity)
+
+  if not os.path.exists(ethnicity_path):
+    print(f"Folder does not exist: {ethnicity_path}")
+    continue
+
+  for file in os.listdir(ethnicity_path):
+
+    file_path = os.path.join(ethnicity_path, file)
+
+    if not file.endswith('.wav'):
+      continue
+
+    features = extract_features(file_path)
+
+    if features is not None:
+      train_features_list.append(features)
+      train_labels_list.append(ethnicity)
+
+# Save training features in "train_features.csv"
+train_features_array = np.array(train_features_list)
+train_df = pd.DataFrame(train_features_array)
+
+train_df['label'] = train_labels_list
+train_df.to_csv(train_features_output_path, index=False)
+
+print(f"Training features saved to {train_features_output_path}")
+
+## For testing data:
+test_features_list = []
+test_labels_list = []
+
+test_path = os.path.join(dataset_path, 'test')
+for ethnicity in ['white', 'asian']:
+  ethnicity_path = os.path.join(test_path, ethnicity)
+  if not os.path.exists(ethnicity_path):
+    print(f"Folder does not exist: {ethnicity_path}")
+    continue
+
+  for file in os.listdir(ethnicity_path):
+    file_path = os.path.join(ethnicity_path, file)
+
+    if not file.endswith('.wav'):
+      continue
+
+    features = extract_features(file_path)
+    if features is not None:
+        test_features_list.append(features)
+        test_labels_list.append(ethnicity)
+
+# Save testing features to "test_features.csv"
+test_features_array = np.array(test_features_list)
+test_df = pd.DataFrame(test_features_array)
+
+test_df['label'] = test_labels_list
+test_df.to_csv(test_features_output_path, index=False)
+
+print(f"Testing features saved to {test_features_output_path}")
+
+## Training and Testing Model
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, precision_score, recall_score, f1_score
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+## Load datasets
+train_path = '/content/drive/MyDrive/train_features.csv'
+test_path = '/content/drive/MyDrive/test_features.csv'
+
+train_df = pd.read_csv(train_path)
+test_df = pd.read_csv(test_path)
+
+def prepare_data(df):
+    X = df.drop(columns=['label'])
+    y = df['label']
+    return X, y
+
+X_train, y_train = prepare_data(train_df)
+X_test, y_test = prepare_data(test_df)
+
+# Evaluation Function: 
+def evaluate_model(name, y_true, y_pred):
+
+  accuracy = accuracy_score(y_true, y_pred)
+  precision = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+  recall = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+  f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+
+  print(f"\n{name} Evaluation:")
+  print(f"Accuracy: {accuracy:.2f}")
+  print(f"Precision: {precision:.2f}")
+  print(f"Recall: {recall:.2f}")
+  print(f"F1 Score: {f1:.2f}")
+
+  ## Plot Confusion Matrix: 
+  conf_matrix = confusion_matrix(y_true, y_pred)
+  plt.figure(figsize=(6, 4))
+  sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=np.unique(y_true), yticklabels=np.unique(y_true))
+  plt.title(f"{name} Confusion Matrix")
+  plt.ylabel('True')
+  plt.xlabel('Predicted')
+  plt.show()
+
+#### Train and evaluate models ### 
+results = []
+
+
+def run_models(X_train, y_train, X_test, y_test):
+  print("\n--- Running Models ----")
+
+  #A. KNN model with different k values
+  for k in [3, 7, 9]:
+    model_name = f"KNN (k={k})"
+    knn = KNeighborsClassifier(n_neighbors=k)
+    knn.fit(X_train, y_train)
+
+    y_pred = knn.predict(X_test)
+
+    evaluate_model(model_name, y_test, y_pred)
+
+    results.append({"Model": model_name, "Accuracy": accuracy_score(y_test, y_pred),
+                    "Precision": precision_score(y_test, y_pred, average='weighted', zero_division=0),
+                    "Recall": recall_score(y_test, y_pred, average='weighted', zero_division=0),
+                    "F1 Score": f1_score(y_test, y_pred, average='weighted', zero_division=0)})
+
+  ## B. SVM with different C 
+  svm_params = {'C': [0.1, 1, 10, 100], 'kernel': ['linear']}
+  for C in svm_params['C']:
+    for kernel in svm_params['kernel']:
+      model_name = f"SVM (C={C}, kernel={kernel})"
+      svm = SVC(C=C, kernel=kernel, probability=True)
+
+      svm.fit(X_train, y_train)
+
+      y_pred = svm.predict(X_test)
+
+      evaluate_model(model_name, y_test, y_pred)
+
+      results.append({"Model": model_name, "Accuracy": accuracy_score(y_test, y_pred),
+                      "Precision": precision_score(y_test, y_pred, average='weighted', zero_division=0),
+                      "Recall": recall_score(y_test, y_pred, average='weighted', zero_division=0),
+                      "F1 Score": f1_score(y_test, y_pred, average='weighted', zero_division=0)})
+
+  #C. GMM 
+  covariance_types = ['full']
+  for cov_type in covariance_types:
+    model_name = f"GMM (covariance_type={cov_type})"
+    gmm = GaussianMixture(n_components=2, covariance_type=cov_type, random_state=42)
+    gmm.fit(X_train)
+
+    probabilities = gmm.predict_proba(X_test)
+    y_pred = ["asian" if prob[0] > prob[1] else "white" for prob in probabilities]
+
+    evaluate_model(model_name, y_test, y_pred)
+    results.append({"Model": model_name, "Accuracy": accuracy_score(y_test, y_pred),
+                    "Precision": precision_score(y_test, y_pred, average='weighted', zero_division=0),
+                    "Recall": recall_score(y_test, y_pred, average='weighted', zero_division=0),
+                    "F1 Score": f1_score(y_test, y_pred, average='weighted', zero_division=0)})
+
+run_models(X_train, y_train, X_test, y_test)
+# Summarize results
+results_df = pd.DataFrame(results)
+
+print("\nSummary of Results:")
+print(results_df.to_string(index=False))
+
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.model_selection import GridSearchCV
+
+## to study the effect of hyperparameter:: 
+
+train_df = pd.read_csv('/content/drive/MyDrive/train_features.csv')
+test_df = pd.read_csv('/content/drive/MyDrive/test_features.csv')
+
+X_train = train_df.drop(columns=['label'])
+y_train = train_df['label']
+
+X_test = test_df.drop(columns=['label'])
+y_test = test_df['label']
+
+# Grid Search for Hyperparameter Tuning
+
+svm_params = {'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000], 'kernel': ['linear', 'rbf']}
+knn_params = {'n_neighbors': [2, 4, 6, 8, 10, 12, 14]}
+
+svm_grid = GridSearchCV(SVC(probability=True), svm_params, cv=5, scoring='accuracy')
+knn_grid = GridSearchCV(KNeighborsClassifier(), knn_params, cv=5, scoring='accuracy')
+
+svm_grid.fit(X_train, y_train)
+knn_grid.fit(X_train, y_train)
+
+svm_results = pd.DataFrame(svm_grid.cv_results_)
+knn_results = pd.DataFrame(knn_grid.cv_results_)
+
+plt.figure(figsize=(10, 8))
+
+# SVM Results
+for kernel in svm_params['kernel']:
+    kernel_results = svm_results[svm_results['param_kernel'] == kernel]
+    plt.plot(kernel_results['param_C'], kernel_results['mean_test_score'], marker='o', label=f'SVM (Kernel: {kernel})')
+
+# KNN Results
+plt.plot(knn_results['param_n_neighbors'], knn_results['mean_test_score'], marker='s', linestyle='--', label='KNN')
+
+# Customizing the plot
+plt.title('The effect of hyperparameters on Model Accuracy', fontsize=18, weight='bold')
+plt.xlabel('Hyperparameters', fontsize=14)
+
+plt.ylabel('Accuracy', fontsize=14)
+
+plt.xscale('log')
+
+plt.xticks([0.001, 0.01, 0.1, 1, 10, 100, 1000] + knn_params['n_neighbors'], fontsize=12, rotation=45)
+plt.yticks(fontsize=12)
+
+plt.legend(title="Models", fontsize=12, loc='best')
+plt.grid(True, linestyle='--', linewidth=0.5)
+
+plt.tight_layout()
+plt.show()
+
