@@ -45,3 +45,9 @@ Performance will be evaluated using:
 - **Precision, Recall, F1-score** – Metrics to assess classification balance.  
 - **Confusion Matrix** – Visual representation of misclassification rates.  
 
+##  Contributing
+We welcome contributions! If you find an issue or want to enhance the project, feel free to Submit a pull request
+
+##  Contact
+For any inquiries, feel free to reach out:
+- **Email:**(mailto:dana.gassad03@gmail.com)
